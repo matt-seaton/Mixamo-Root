@@ -117,15 +117,14 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
     for curve in myFcurves:
         if str(curve.data_path) == hip_bone_fcurve and curve.array_index in [0, 2]:  # x and z hip locations
             for root_curve in myFcurves:
-                if 'root' in str(root_curve.data_path).lower():
-                    print(root_curve.data_path == root_bone_fcurve)
                 if str(root_curve.data_path) == root_bone_fcurve and root_curve.array_index == curve.array_index:
                     for key in curve.keyframe_points:
                         root_curve.keyframe_points.insert(frame=key.co[0], value=key.co[1] * 100)
      
+    # Remove xz tracks from hip bone
     for i in myFcurves:
         if str(i.data_path)==hip_bone_fcurve:
-            if i.array_index != 1:
+            if i.array_index != 1:  # Keep y
                 myFcurves.remove(i)
                 
     bpy.ops.pose.select_all(action='DESELECT')
@@ -139,8 +138,6 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
 
     # Get the fcurves for the root bone's location
     fcurves = [fcurve for fcurve in action.fcurves if fcurve.data_path == 'pose.bones["{}"].location'.format(name_prefix + root_bone_name) and fcurve.array_index in range(3)]
-    for i in fcurves:
-        print(i.data_path)
 
     # Set the minimum Y value of the root bone to 0
     z_fcurve = fcurves[1]
@@ -388,6 +385,7 @@ def push(obj, action, track_name=None, start_frame=0):
 
 def get_all_anims(source_dir, root_bone_name="Root", hip_bone_name="mixamorig:Hips", remove_prefix=False, name_prefix="mixamorig:",  insert_root=False, delete_armatures=False):
     files = os.listdir(source_dir)
+    files = [f for f in files if f.endswith('.fbx')]
     num_files = len(files)
     current_context = bpy.context.area.ui_type
     old_objs = set(bpy.context.scene.objects)
