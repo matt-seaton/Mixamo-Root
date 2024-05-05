@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ # -*- coding: utf-8 -*-
 
 '''
     Copyright (C) 2022  Richard Perry
@@ -96,7 +96,7 @@ def euler_to_quat(*angles):
 
 
 def decompose_quaternion(q):
-    q = q.normalized()
+    q.normalize()
     w = np.sqrt(1 + q[0]) / np.sqrt(2)
     x = q[1] / (np.sqrt(2) * w)
     y = q[2] / (np.sqrt(2) * w)
@@ -149,18 +149,9 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
         if str(curve.data_path)==hip_bone_fcurve:
             if curve.array_index != 1:  # Keep y
                 myFcurves.remove(curve)
-                
-    bpy.ops.pose.select_all(action='DESELECT')
-    bpy.context.object.pose.bones[name_prefix + root_bone_name].bone.select = True
-
-    #bpy.ops.graph.paste()        
-
-    # Get the animation data and action
-    anim_data = bpy.context.object.animation_data
-    action = anim_data.action if anim_data else None
 
     # Get the fcurves for the root bone's location
-    fcurves = [fcurve for fcurve in action.fcurves if fcurve.data_path == 'pose.bones["{}"].location'.format(name_prefix + root_bone_name) and fcurve.array_index in range(3)]
+    fcurves = [fcurve for fcurve in myFcurves if fcurve.data_path == 'pose.bones["{}"].location'.format(name_prefix + root_bone_name) and fcurve.array_index in range(3)]
 
     # Set the minimum Y value of the root bone to 0
     z_fcurve = fcurves[1]
@@ -168,7 +159,7 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
         if keyframe.co.y < 0:
             keyframe.co.y = 0
     
-    # Looks like we're eliminating foating hips (only negative y values allows)
+    # Looks like we're eliminating floating hips ?
     hips_fcurves = [hips_fcurve for hips_fcurve in myFcurves if hips_fcurve.data_path == 'pose.bones["{}"].location'.format(hip_bone_name) and hips_fcurve.array_index in range(3)]
     for keyframe in hips_fcurves[0].keyframe_points:
         if keyframe.co.y > 0:
@@ -176,41 +167,46 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
             #keyframe.co.y = keyframe.co.y / 2
     
     # Get quaternion keyframes
-    quat_keys = {}
+    hip_quats = {}
     for curve in myFcurves:
         hip_bone_fcurve = f'pose.bones["{hip_bone_name}"].rotation_quaternion'
         if str(curve.data_path)==hip_bone_fcurve:
             for key in curve.keyframe_points:
                 frame, quat_component = key.co
-                if int(round(frame)) not in quat_keys:  # convert float to int
-                    quat_keys[int(round(frame))] = [0] * 4
-                quat_keys[int(round(frame))][curve.array_index] = quat_component
-    quat_keys = {f: Quaternion(q) for f, q in quat_keys.items()}
+                if int(round(frame)) not in hip_quats:  # convert float to int
+                    hip_quats[int(round(frame))] = [0] * 4
+                hip_quats[int(round(frame))][curve.array_index] = quat_component
+    hip_quats = {f: Quaternion(q) for f, q in hip_quats.items()}
 
-    ## extract y-axis component only from the hip rotations
-    root_quats = {}
-    hip_quats = {}
-    for f, q in quat_keys.items():
-        root_quats[f] = decompose_quaternion(q)
-        hips_quats = root_quats[f].inverted() * q 
+    ## Local hip rotation (relative to parent root bone)
+    hip_rot = bpy.context.object.pose.bones[hip_bone_name].bone.matrix_local.to_quaternion()
 
-    # add rot tracks to root  
-    root = {}
+    ## Convert keyframes to root bone frame
+    ## hip_local @ hip_rot = hip_root_frame
+    hip_quats = {f: q @ hip_rot for f, q in hip_quats.items()}
+    
+    ## Pull out y-axis component of rotation for root bone
+    root_quats = {f: Quaternion((q.w, 0, q.y, 0)).normalized() for f, q in hip_quats.items()}
+    for f in root_quats:
+        root_quats[f].normalize()
+    
+    # hip_quat_root_frame = root_quat (Y) @ remainder (XZ)
+    remainder = {f: root_quats[f].inverted() @ q for f, q in hip_quats.items()}
+   
+    # convert back to hip frame 
+    remainder = {f: q @ hip_rot.inverted() for f, q in remainder.items()}
+
+    # add rot tracks to root and set keyframes
     for x in range(4):
-        root[x] = myFcurves.new(data_path=f'pose.bones["{name_prefix}{root_bone_name}"].rotation_quaternion', index=x, action_group=name_prefix + root_bone_name)
-  
-    # set root keyframes
-    for curve in myFcurves:
-        if str(curve.data_path) != f'pose.bones["{name_prefix}{root_bone_name}"].rotation_quaternion':
-            continue
+        curve = myFcurves.new(data_path=f'pose.bones["{name_prefix}{root_bone_name}"].rotation_quaternion', index=x, action_group=name_prefix + root_bone_name)
         for f, k in root_quats.items():
-            curve.keyframe_points.insert(frame=f, value=k[curve.array_index])
+            curve.keyframe_points.insert(frame=f, value=k[x])
   
     # set hips keyframes
     for curve in myFcurves:
         if str(curve.data_path) != f'pose.bones["{hip_bone_name}"].rotation_quaternion':
             continue
-        for f, k in hip_quats.items():
+        for f, k in remainder.items():
             curve.keyframe_points.insert(frame=f, value=k[curve.array_index])
   
   
