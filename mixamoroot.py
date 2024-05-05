@@ -24,6 +24,9 @@ import bpy
 import os
 import logging
 from pathlib import Path
+from mathutils import Quaternion
+import math
+import numpy as np
 
 
 log = logging.getLogger(__name__)
@@ -79,7 +82,29 @@ def scaleAll():
     use_proportional_projected=False)
 
 
+def euler_to_quat(*angles):
+    import math
+    half_angles = [a/2 for a in angles]
+    c1, s1 = math.cos(half_angles[0]), math.sin(half_angles[0])
+    c2, s2 = math.cos(half_angles[1]), math.sin(half_angles[1])
+    c3, s3 = math.cos(half_angles[2]), math.sin(half_angles[2])
+    w = c1 * c2 * c3 - s1 * s2 * s3
+    x = c1 * s2 * c3 + s1 * c2 * s3
+    y = c1 * c2 * s3 - s1 * s2 * c3
+    z = s1 * c2 * c3 + c1 * s2 * s3
+    return Quaternion((w, x, y, z))
+
+
+def decompose_quaternion(q):
+    q = q.normalized()
+    w = np.sqrt(1 + q[0]) / np.sqrt(2)
+    x = q[1] / (np.sqrt(2) * w)
+    y = q[2] / (np.sqrt(2) * w)
+    z = q[3] / (np.sqrt(2) * w)
+    return Quaternion(np.array([w, x, y, z])).normalized()
+
 def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix="mixamorig:"):
+    bpy.ops.object.mode_set(mode = 'POSE')
     bpy.context.area.ui_type = 'FCURVES'
     #SELECT OUR ROOT MOTION BONE 
     bpy.ops.pose.select_all(action='DESELECT')
@@ -103,8 +128,6 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
     hip_bone_fcurve = f'pose.bones["{hip_bone_name}"].location'
     root_bone_fcurve = f'pose.bones["{name_prefix}{root_bone_name}"].location'
 
-    #bpy.ops.object.mode_set(mode='EDIT')
-    #bpy.context.area.ui_type = 'TEXT_EDITOR'
     bpy.context.object.pose.bones[name_prefix + root_bone_name].bone.select = True
     
     # Clear out root bone fcurve
@@ -122,10 +145,10 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
                         root_curve.keyframe_points.insert(frame=key.co[0], value=key.co[1] * 100)
      
     # Remove xz tracks from hip bone
-    for i in myFcurves:
-        if str(i.data_path)==hip_bone_fcurve:
-            if i.array_index != 1:  # Keep y
-                myFcurves.remove(i)
+    for curve in myFcurves:
+        if str(curve.data_path)==hip_bone_fcurve:
+            if curve.array_index != 1:  # Keep y
+                myFcurves.remove(curve)
                 
     bpy.ops.pose.select_all(action='DESELECT')
     bpy.context.object.pose.bones[name_prefix + root_bone_name].bone.select = True
@@ -145,27 +168,52 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
         if keyframe.co.y < 0:
             keyframe.co.y = 0
     
-    anim_data = bpy.context.object.animation_data
-    action = anim_data.action if anim_data else None
-    hips_fcurves = [hips_fcurve for hips_fcurve in action.fcurves if hips_fcurve.data_path == 'pose.bones["{}"].location'.format(hip_bone_name) and hips_fcurve.array_index in range(3)]
+    # Looks like we're eliminating foating hips (only negative y values allows)
+    hips_fcurves = [hips_fcurve for hips_fcurve in myFcurves if hips_fcurve.data_path == 'pose.bones["{}"].location'.format(hip_bone_name) and hips_fcurve.array_index in range(3)]
     for keyframe in hips_fcurves[0].keyframe_points:
         if keyframe.co.y > 0:
             keyframe.co.y = 0
             #keyframe.co.y = keyframe.co.y / 2
-
-    bpy.context.area.ui_type = 'VIEW_3D'
-    bpy.ops.object.mode_set(mode='OBJECT')
-
-    myFcurves = bpy.context.object.animation_data.action.fcurves
-        
+    
+    # Get quaternion keyframes
+    quat_keys = {}
     for curve in myFcurves:
-        hip_bone_fcurve = 'pose.bones["mixamorig:Root"].location'
+        hip_bone_fcurve = f'pose.bones["{hip_bone_name}"].rotation_quaternion'
         if str(curve.data_path)==hip_bone_fcurve:
             for key in curve.keyframe_points:
-                print(key.co)
-               
+                frame, quat_component = key.co
+                if int(round(frame)) not in quat_keys:  # convert float to int
+                    quat_keys[int(round(frame))] = [0] * 4
+                quat_keys[int(round(frame))][curve.array_index] = quat_component
+    quat_keys = {f: Quaternion(q) for f, q in quat_keys.items()}
 
+    ## extract y-axis component only from the hip rotations
+    root_quats = {}
+    hip_quats = {}
+    for f, q in quat_keys.items():
+        root_quats[f] = decompose_quaternion(q)
+        hips_quats = root_quats[f].inverted() * q 
 
+    # add rot tracks to root  
+    root = {}
+    for x in range(4):
+        root[x] = myFcurves.new(data_path=f'pose.bones["{name_prefix}{root_bone_name}"].rotation_quaternion', index=x, action_group=name_prefix + root_bone_name)
+  
+    # set root keyframes
+    for curve in myFcurves:
+        if str(curve.data_path) != f'pose.bones["{name_prefix}{root_bone_name}"].rotation_quaternion':
+            continue
+        for f, k in root_quats.items():
+            curve.keyframe_points.insert(frame=f, value=k[curve.array_index])
+  
+    # set hips keyframes
+    for curve in myFcurves:
+        if str(curve.data_path) != f'pose.bones["{hip_bone_name}"].rotation_quaternion':
+            continue
+        for f, k in hip_quats.items():
+            curve.keyframe_points.insert(frame=f, value=k[curve.array_index])
+  
+  
 def fix_bones_nla(remove_prefix=False, name_prefix="mixamorig:"):
     bpy.ops.object.mode_set(mode = 'OBJECT')
         
