@@ -178,7 +178,7 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
                 hip_quats[int(round(frame))][curve.array_index] = quat_component
     hip_quats = {f: Quaternion(q) for f, q in hip_quats.items()}
 
-    ## Local hip rotation (relative to parent root bone)
+    ## Local hip rotation in local frame
     hip_rot = bpy.context.object.pose.bones[hip_bone_name].bone.matrix_local.to_quaternion()
 
     ## Convert keyframes to root bone frame
@@ -189,6 +189,13 @@ def copyHips(root_bone_name="Root", hip_bone_name="mixamorig:Hips", name_prefix=
     root_quats = {f: Quaternion((q.w, 0, q.y, 0)).normalized() for f, q in hip_quats.items()}
     for f in root_quats:
         root_quats[f].normalize()
+    
+    ## Subtract rotation from root bone from first frame, so root pone still points forward on clips
+    ## where the hips are angled (e.g. strafe).  Leave this component on the hips
+    first_frame = min(hip_quats.keys())
+    hip_y_rot = root_quats[first_frame]
+    for f, q in root_quats.items():
+        root_quats[f] = hip_y_rot.inverted() @ root_quats[f]
     
     # hip_quat_root_frame = root_quat (Y) @ remainder (XZ)
     remainder = {f: root_quats[f].inverted() @ q for f, q in hip_quats.items()}
